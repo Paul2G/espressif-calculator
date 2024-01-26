@@ -2,9 +2,12 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 
 #define STACK_SIZE 1024 * 2
+
+QueueHandle_t GlobalQueue;
 
 const char keys[4][4] =
     {
@@ -23,20 +26,26 @@ const gpio_num_t rowPins[4] = {GPIO_NUM_14, GPIO_NUM_27, GPIO_NUM_26, GPIO_NUM_2
 const gpio_num_t colPins[4] = {GPIO_NUM_33, GPIO_NUM_32, GPIO_NUM_18, GPIO_NUM_19};
 
 esp_err_t create_tasks(void);
-void print_something_task(void *pvParameters);
-void print_keys_task(void *pvParameters);
+void print_received_key(void *pvParameters);
+void send_pressed_key_task(void *pvParameters);
 
 esp_err_t init_keys(void);
 char scan_keys(void);
 
 void app_main(void)
 {
+    int ledLevel = 0;
+
     init_keys();
     create_tasks();
+    GlobalQueue = xQueueCreate(20, sizeof(char));
+    gpio_reset_pin(GPIO_NUM_13);
+    gpio_set_direction(GPIO_NUM_13, GPIO_MODE_OUTPUT);
 
     while (1)
     {
-        ESP_LOGI("mTask", "Nothing here");
+        ledLevel = !ledLevel;
+        gpio_set_level(GPIO_NUM_13, ledLevel);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
@@ -48,13 +57,13 @@ esp_err_t create_tasks()
     static uint8_t ucParameterToPass;
     TaskHandle_t xHandle = NULL;
 
-    xTaskCreate(print_keys_task,
+    xTaskCreate(send_pressed_key_task,
                 "reader",
                 STACK_SIZE,
                 &ucParameterToPass,
                 1,
                 &xHandle);
-    xTaskCreate(print_something_task,
+    xTaskCreate(print_received_key,
                 "printer",
                 STACK_SIZE,
                 &ucParameterToPass,
@@ -64,17 +73,20 @@ esp_err_t create_tasks()
     return ESP_OK;
 }
 
-void print_something_task(void *pvParameters)
+void print_received_key(void *pvParameters)
 {
+    char receivedValue = '\0';
 
     while (1)
     {
-        ESP_LOGI("pTask", "Aqui andamos");
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (xQueueReceive(GlobalQueue, &receivedValue, pdMS_TO_TICKS(50)))
+        {
+            ESP_LOGI("printer", "Received key: %c", receivedValue);
+        }
     }
 }
 
-void print_keys_task(void *pvParameters)
+void send_pressed_key_task(void *pvParameters)
 {
     char value = '\0';
 
@@ -83,9 +95,12 @@ void print_keys_task(void *pvParameters)
         value = scan_keys();
         if (value)
         {
-            ESP_LOGI("kTask", "Pressed: %c", value);
+            if (!xQueueSend(GlobalQueue, &value, pdMS_TO_TICKS(100)))
+            {
+                ESP_LOGE("sender", "Sended key: %c", value);
+            }
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
